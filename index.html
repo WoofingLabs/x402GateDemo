@@ -29,6 +29,7 @@
         <ul>
           <li>请在钱包中切换至 <strong>Gate Layer</strong> 并准备测试 GDOG（合约地址：<code>0xf6d9cf57e20ba0d33372e8998a9424aa53411e04</code>）。</li>
           <li>本 demo 使用 EIP‑3009（<code>TransferWithAuthorization</code>）离线签名；由 facilitator 代付 gas、提交上链。</li>
+          <li>请确保后端服务器（<code>https://x402-testnet.newshacker.me/content</code>）支持 x402 协议。</li>
         </ul>
       </details>
     </div>
@@ -38,6 +39,7 @@ const out = document.getElementById('out');
 const premiumLine = document.getElementById('premium-line');
 const unlockButton = document.getElementById('unlock');
 const userWallet = '0xE45278e0Db93649E57d43CfA38c147c282841d5c';
+const contentEndpoint = 'https://x402-testnet.newshacker.me/content';
 const log = (...args) => { out.textContent += args.join(' ') + "\n"; };
 
 // 钱包错误处理辅助函数
@@ -101,12 +103,13 @@ async function walletRequestWithGracefulError(requestFn, operationType = '') {
 }
 
 async function fetchPaymentRequirements() {
-  const r = await fetch('/content', { method: 'GET' });
+  log('→ 请求端点：', contentEndpoint);
+  const r = await fetch(contentEndpoint, { method: 'GET' });
   log('← /content 首次响应状态：', r.status);
   if (r.status === 404) {
-    log('❌ 服务器返回404，/content端点不存在');
-    log('💡 请检查服务器是否正确配置/content路由，或尝试使用完整URL（如http://your-server.com/content）');
-    throw new Error('服务器未找到/content端点');
+    log('❌ 服务器返回404，端点不存在');
+    log('💡 请检查：1. 后端服务器 https://x402-testnet.newshacker.me/content 是否运行；2. 是否支持 x402 协议（返回 402 和 JSON）');
+    throw new Error('服务器未找到端点：' + contentEndpoint);
   }
   if (r.status !== 402) {
     const body = await r.text();
@@ -299,7 +302,7 @@ async function unlock() {
     }
 
     log('→ 携带 X‑PAYMENT 重试…');
-    const paid = await fetch('/content', { headers: { 'X-PAYMENT': xPaymentB64 } });
+    const paid = await fetch(contentEndpoint, { headers: { 'X-PAYMENT': xPaymentB64 } });
     log('← 支付后响应状态：', paid.status);
 
     if (paid.status !== 200) {
