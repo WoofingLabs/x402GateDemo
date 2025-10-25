@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>x402 Worker Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body{font-family: system-ui, -apple-system, Segoe UI, Roboto, PingFang SC, Noto Sans CJK, sans-serif; margin: 24px; line-height: 1.6;}
+      code{background: #f6f6f6; padding: 0 4px; border-radius: 4px;}
+      button{padding: 8px 14px; font-size: 14px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer;}
+      .box{border: 1px solid #e5e5e5; border-radius: 8px; padding: 16px; margin: 16px 0;}
+      .muted{color:#777;}
+      pre{white-space: pre-wrap; max-height: 300px; overflow-y: auto;}
+    </style>
+  </head>
+  <body>
+    <h1>x402 全流程（Gate Layer）演示</h1>
+
+    <div class="box">
+      <p>第一行（公开）：Hello x402 👋</p>
+      <p id="premium-line" class="muted">第二行（付费后可见）：将在支付成功后显示…</p>
+      <button id="unlock">🔓 解锁完整内容（测试网 GUSD $0.001）</button>
+    </div>
+
+    <div id="log" class="box"><strong>日志输出：</strong><pre id="out"></pre></div>
+    <div class="box">
+      <details>
+        <summary>说明</summary>
+        <ul>
+          <li>请在钱包中切换至 <strong>Gate Layer</strong> 并准备测试 GUSD（合约地址：<code>0xece3f96198a5e6b9b2278edbea8d548f66050d1c</code>）。</li>
+          <li>本 demo 使用 EIP‑3009（<code>TransferWithAuthorization</code>）离线签名；由 facilitator 代付 gas、提交上链。</li>
+        </ul>
+      </details>
+    </div>
+
+<script>
+const out = document.getElementById('out');
+const premiumLine = document.getElementById('premium-line');
+const unlockButton = document.getElementById('unlock');
+const userWallet = '0xE45278e0Db93649E57d43CfA38c147c282841d5c'; // 你的钱包地址，仅用于日志参考
+const log = (...args) => {
+  const lines = out.textContent.split('\n');
+  lines.push(args.join(' '));
+  if (lines.length > 50) lines.shift(); // 保留最后50行
+  out.textContent = lines.join('\n');
+  out.scrollTop = out.scrollHeight; // 自动滚动到底部
+};
+
+// 钱包错误处理辅助函数
+function handleWalletError(e, operation) {
+  if (e?.code === 4001) {
+    return `您取消了${operation}操作，可以重新点击按钮重试`;
+  } else if (e?.code === -32002) {
+    return '钱包已有待处理的请求，请先在钱包中处理';
+  } else if (e?.code === 4902) {
+    return '网络未添加到钱包中';
+  }
+  return e?.message || String(e);
+}
+
+// 检测钱包类型
+function isRabbyWallet() {
+  return window.ethereum?.isRabby === true;
+}
+
+// Rabby 专用：多次重试请求
+async function retryRequestForRabby(requestFn, operationType = '操作', maxRetries = 3) {
+  log(`   ⏳ Rabby 快速 reject 检测到，将多次重试${operationType}...`);
+  for (let i = 0; i < maxRetries; i++) {
+    const waitTime = 2000 + (i * 1000);
+    log(`   → 等待 ${waitTime / 1000} 秒后进行第 ${i + 1}/${maxRetries} 次重试...`);
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+    try {
+      log(`   → 正在重试${operationType}（第 ${i + 1} 次）...`);
+      const result = await requestFn();
+      log(`   ✅ 重试成功！`);
+      return result;
+    } catch (retryErr) {
+      if (retryErr?.code === 4001) {
+        log(`   ⚠️ 第 ${i + 1} 次重试仍收到 4001 错误`);
+        if (i === maxRetries - 1) {
+          log(`   ❌ 已重试 ${maxRetries} 次，用户可能真的取消了操作`);
+          throw retryErr;
+        }
+      } else {
+        throw retryErr;
+      }
+    }
+  }
+  throw new Error(`重试 ${maxRetries} 次后仍失败`);
+}
+
+// 延迟错误处理：给钱包弹窗足够的显示时间（特别针对 Rabby）
+async function walletRequestWithGracefulError(requestFn, operationType = '') {
+  try {
+    return await requestFn();
+  } catch (e) {
+    if (e?.code === 4001 && operationType && isRabbyWallet()) {
+      try {
+        return await retryRequestForRabby(requestFn, operationType, 3);
+      } catch (retryErr) {
+        throw e;
+      }
+    }
+    throw e;
+  }
+}
+
+// 添加 fetch 超时处理
+async function fetchWithTimeout(url, options, timeout = 10000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (e) {
+    clearTimeout(id);
+    log('❌ 请求超时或失败：', e.message || String(e));
+    throw e;
+  }
+}
+
+async function fetchPaymentRequirements() {
+  try {
+    const r = await fetchWithTimeout('/content', { method: 'GET' });
+    log('← /content 首次响应状态：', r.status);
+    if (r.status !== 402) {
+      return { response: r, requirements: null };
+    }
+    const body = await r.json();
+    if (!body.accepts || !Array.isArray(body.accepts) || body.accepts.length === 0) {
+      throw new Error('服务器未提供有效的支付要求');
+    }
+    return { response: r, requirements: body.accepts[0] };
+  } catch (e) {
+    log('❌ 获取支付要求失败：', e.message || String(e));
+    throw new Error('无法连接服务器或服务器响应无效');
+  }
+}
+
+function hex32Random() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function ensureWalletOnGateLayer() {
+  if (!window.ethereum) throw new Error('未检测到 EVM 钱包（例如 MetaMask/Coinbase Wallet）');
+  log('→ 检查钱包环境…');
+  const chainIdHex = '0x2778'; // Gate Layer Chain ID: 10088
+
+  const current = await ethereum.request({ method: 'eth_chainId' }).catch(() => '0x0');
+  log('   当前 ChainId：', current);
+  if (current !== chainIdHex) {
+    try {
+      log('   正在切换到 Gate Layer…');
+      await walletRequestWithGracefulError(async () => {
+        return await ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] });
+      });
+      log('   ✅ 已切换至 Gate Layer');
+    } catch (e) {
+      if (e?.code === 4902) {
+        log('   未找到 Gate Layer，尝试添加网络…');
+        await walletRequestWithGracefulError(async () => {
+          return await ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: '0x2778',
+              chainName: 'Gate Layer',
+              rpcUrls: ['https://gatelayer-mainnet.gatenode.cc/'],
+              nativeCurrency: { name: 'Gate Token', symbol: 'GT', decimals: 18 },
+              blockExplorerUrls: ['https://www.gatescan.org/gatelayer']
+            }]
+          });
+        });
+        log('   ✅ 已添加 Gate Layer 网络');
+      } else if (e?.code === 4001) {
+        const msg = handleWalletError(e, '网络切换');
+        log('   ⚠️ ' + msg);
+        throw new Error(msg);
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  try {
+    log('   正在请求连接钱包…（请在钱包弹窗中确认）');
+    const accounts = await walletRequestWithGracefulError(async () => {
+      return await ethereum.request({ method: 'eth_requestAccounts' });
+    }, '连接');
+    const from = accounts[0];
+    if (!from) throw new Error('未获取到钱包地址');
+    log('   ✅ 已连接账户：', from);
+    if (from.toLowerCase() === userWallet.toLowerCase()) {
+      log('   ℹ️ 检测到您的个人钱包地址：', userWallet);
+    }
+    return from;
+  } catch (e) {
+    const msg = handleWalletError(e, '钱包连接');
+    log('   ⚠️ ' + msg);
+    throw new Error(msg);
+  }
+}
+
+function buildTypedData(reqs, from, nowSec) {
+  const fallbackTimeout = 30;
+  const maxTimeout = Number(reqs.maxTimeoutSeconds || fallbackTimeout);
+  const validAfter = String(Math.max(0, nowSec - 60));
+  const validBefore = String(nowSec + maxTimeout);
+
+  const message = {
+    from,
+    to: reqs.payTo,
+    value: reqs.maxAmountRequired || reqs.maxAmount,
+    validAfter,
+    validBefore,
+    nonce: hex32Random(),
+  };
+
+  const typed = {
+    types: {
+      EIP712Domain: [
+        { name: "name", type: "string" },
+        { name: "version", type: "string" },
+        { name: "chainId", type: "uint256" },
+        { name: "verifyingContract", type: "address" },
+      ],
+      TransferWithAuthorization: [
+        { name: "from", type: "address" },
+        { name: "to", type: "address" },
+        { name: "value", type: "uint256" },
+        { name: "validAfter", type: "uint256" },
+        { name: "validBefore", type: "uint256" },
+        { name: "nonce", type: "bytes32" },
+      ],
+    },
+    primaryType: "TransferWithAuthorization",
+    domain: {
+      name: reqs.extra?.name || "GUSD",
+      version: reqs.extra?.version || "2",
+      chainId: 10088,
+      verifyingContract: reqs.asset || '0xece3f96198a5e6b9b2278edbea8d548f66050d1c',
+    },
+    message,
+  };
+  return { typed, message };
+}
+
+async function createPaymentHeader(reqs) {
+  const from = await ensureWalletOnGateLayer();
+  log('✅ 钱包地址：', from);
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const { typed, message } = buildTypedData(reqs, from, nowSec);
+  log('→ 构建 EIP-712 数据…');
+  log('   授权摘要：', JSON.stringify(message));
+
+  try {
+    log('→ 请求签名…（请在钱包弹窗中确认签名）');
+    const signFn = async () => {
+      return await ethereum.request({
+        method: 'eth_signTypedData_v4',
+        params: [from, JSON.stringify(typed)],
+      });
+    };
+    const signature = await walletRequestWithGracefulError(signFn, '签名');
+    log('✅ 已完成 EIP‑712 签名');
+
+    const paymentPayload = {
+      x402Version: 1,
+      scheme: reqs.scheme,
+      network: 'gate-layer', // 更新为 Gate Layer
+      payload: {
+        signature,
+        authorization: message,
+      },
+    };
+
+    let b64;
+    try {
+      b64 = btoa(JSON.stringify(paymentPayload));
+    } catch (e) {
+      log('❌ base64 编码失败：', e.message || String(e));
+      throw new Error('支付数据编码失败');
+    }
+    log('   X-PAYMENT (base64) 前 60 字符：', b64.slice(0, 60) + '…');
+    return b64;
+  } catch (e) {
+    const msg = handleWalletError(e, '签名');
+    log('   ⚠️ ' + msg);
+    throw new Error(msg);
+  }
+}
+
+async function unlock() {
+  const originalButtonText = unlockButton ? unlockButton.textContent : '';
+  let isSuccess = false;
+
+  try {
+    if (unlockButton) {
+      unlockButton.disabled = true;
+      unlockButton.textContent = '⏳ 正在处理...';
+    }
+
+    log('→ 请求受保护资源…');
+    const { response, requirements } = await fetchPaymentRequirements();
+    if (response.status !== 402) {
+      const body = await response.text();
+      log('⚠️ 未返回 402，直接得到：', body.slice(0, 200));
+      return;
+    }
+    log('💡 需要支付：', JSON.stringify(requirements, null, 2));
+
+    if (unlockButton) {
+      unlockButton.textContent = '⏳ 请在钱包中确认...';
+    }
+
+    log('→ 生成并签名 EIP‑3009 授权…');
+    const xPaymentB64 = await createPaymentHeader(requirements);
+
+    if (unlockButton) {
+      unlockButton.textContent = '⏳ 正在结算...';
+    }
+
+    log('→ 携带 X‑PAYMENT 重试…');
+    const paid = await fetchWithTimeout('/content', { headers: { 'X-PAYMENT': xPaymentB64 } });
+    log('← 支付后响应状态：', paid.status);
+
+    if (paid.status !== 200) {
+      const text = await paid.text();
+      log('❌ 支付后仍未成功：', paid.status, text);
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed.error) {
+          log('   失败原因：', parsed.error);
+        }
+      } catch (_) {}
+      alert('支付或结算失败：' + text.slice(0, 200));
+      return;
+    }
+
+    const text = await paid.text();
+    const xpr = paid.headers.get('x-payment-response');
+    log('✅ 已解锁：\n' + text);
+    if (xpr) {
+      const settlement = JSON.parse(atob(xpr));
+      log('🧾 结算信息：\n' + JSON.stringify(settlement, null, 2));
+      if (settlement.txHash) {
+        log('🔗 交易哈希：', settlement.txHash);
+        log(`🔗 查看交易：https://www.gatescan.org/gatelayer/tx/${settlement.txHash}`);
+      }
+    }
+    const lines = text.split('\n');
+    if (premiumLine && lines[1]) {
+      premiumLine.textContent = lines[1];
+      premiumLine.classList.remove('muted');
+    }
+
+    isSuccess = true;
+    if (unlockButton) {
+      unlockButton.disabled = true;
+      unlockButton.textContent = '✅ 已解锁';
+    }
+    alert('解锁成功！\n\n' + text);
+  } catch (e) {
+    console.error(e);
+    const errorMsg = e.message || String(e);
+    log('❌ 出错：', errorMsg);
+    if (errorMsg.includes('取消') || errorMsg.includes('拒绝')) {
+      log('💡 操作已取消，您可以重新点击按钮重试');
+    } else {
+      alert('出错：' + errorMsg);
+    }
+  } finally {
+    if (!isSuccess && unlockButton) {
+      unlockButton.disabled = false;
+      unlockButton.textContent = originalButtonText;
+    }
+  }
+}
+
+if (unlockButton) {
+  unlockButton.addEventListener('click', unlock);
+}
+</script>
+  <script defer src="https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015" integrity="sha512-ZpsOmlRQV6y907TI0dKBHq9Md29nnaEIPlkf84rnaERnq6zvWvPUqr2ft8M1aS28oN72PdrCzSjY4U6VaAw1EQ==" data-cf-beacon='{"version":"2024.11.0","token":"5350441611fa4c4aa9f34d1ab0e94507","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
