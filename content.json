@@ -1,0 +1,20 @@
+{
+  "x402Version": 1,
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "gatelayer",
+      "maxAmountRequired": "1000",
+      "resource": "https://woofinglabs.github.io/x402GateDemo/content",
+      "description": "访问完整页面内容",
+      "mimeType": "text/plain; charset=utf-8",
+      "payTo": "0xE45278e0Db93649E57d43CfA38c147c282841d5c",
+      "maxTimeoutSeconds": 120,
+      "asset": "0xf6d9cf57e20ba0d33372e8998a9424aa53411e04",
+      "extra": {
+        "name": "GDOG",
+        "version": "2"
+      }
+    }
+  ]
+}
