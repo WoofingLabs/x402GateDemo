@@ -5,7 +5,7 @@
       "scheme": "exact",
       "network": "gate-layer",
       "maxAmountRequired": "1000000000000000000",
-      "resource": "https://x402-testnet.newshacker.me/content",
+      "resource": "https://woofinglabs.github.io/x402GateDemo/content",
       "description": "访问完整页面内容",
       "mimeType": "text/plain; charset=utf-8",
       "payTo": "0xfE42DDa92a00392f35BB7c804f448A402BBa477a",
