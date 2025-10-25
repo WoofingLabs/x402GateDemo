@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <title>x402 Worker Demo</title>
+    <title>x402 GDOG Demo</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body{font-family: system-ui, -apple-system, Segoe UI, Roboto, PingFang SC, Noto Sans CJK, sans-serif; margin: 24px; line-height: 1.6;}
@@ -19,7 +19,7 @@
     <div class="box">
       <p>第一行（公开）：Hello x402 👋</p>
       <p id="premium-line" class="muted">第二行（付费后可见）：将在支付成功后显示…</p>
-      <button id="unlock">🔓 解锁完整内容（测试网 GUSD $0.001）</button>
+      <button id="unlock">🔓 解锁完整内容（测试网 GDOG 1）</button>
     </div>
 
     <div id="log" class="box"><strong>日志输出：</strong><pre id="out"></pre></div>
@@ -27,7 +27,7 @@
       <details>
         <summary>说明</summary>
         <ul>
-          <li>请在钱包中切换至 <strong>Gate Layer</strong> 并准备测试 GUSD（合约地址：<code>0xece3f96198a5e6b9b2278edbea8d548f66050d1c</code>）。</li>
+          <li>请在钱包中切换至 <strong>Gate Layer</strong> 并准备测试 GDOG（合约地址：<code>0xf6d9cf57e20ba0d33372e8998a9424aa53411e04</code>）。</li>
           <li>本 demo 使用 EIP‑3009（<code>TransferWithAuthorization</code>）离线签名；由 facilitator 代付 gas、提交上链。</li>
         </ul>
       </details>
@@ -213,7 +213,7 @@ function buildTypedData(reqs, from, nowSec) {
   const message = {
     from,
     to: reqs.payTo,
-    value: reqs.maxAmountRequired || reqs.maxAmount,
+    value: reqs.maxAmountRequired || reqs.maxAmount || '1000000000000000000', // 默认1 GDOG（假设18位小数）
     validAfter,
     validBefore,
     nonce: hex32Random(),
@@ -238,10 +238,10 @@ function buildTypedData(reqs, from, nowSec) {
     },
     primaryType: "TransferWithAuthorization",
     domain: {
-      name: reqs.extra?.name || "GUSD",
+      name: reqs.extra?.name || "GDOG",
       version: reqs.extra?.version || "2",
       chainId: 10088,
-      verifyingContract: reqs.asset || '0xece3f96198a5e6b9b2278edbea8d548f66050d1c',
+      verifyingContract: reqs.asset || '0xf6d9cf57e20ba0d33372e8998a9424aa53411e04',
     },
     message,
   };
@@ -271,7 +271,7 @@ async function createPaymentHeader(reqs) {
     const paymentPayload = {
       x402Version: 1,
       scheme: reqs.scheme,
-      network: 'gate-layer', // 更新为 Gate Layer
+      network: 'gate-layer',
       payload: {
         signature,
         authorization: message,
