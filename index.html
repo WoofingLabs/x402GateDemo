@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <title>x402 GDOG Demo</title>
+    <title>x402 Worker Demo</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body{font-family: system-ui, -apple-system, Segoe UI, Roboto, PingFang SC, Noto Sans CJK, sans-serif; margin: 24px; line-height: 1.6;}
@@ -10,7 +10,7 @@
       button{padding: 8px 14px; font-size: 14px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer;}
       .box{border: 1px solid #e5e5e5; border-radius: 8px; padding: 16px; margin: 16px 0;}
       .muted{color:#777;}
-      pre{white-space: pre-wrap; max-height: 300px; overflow-y: auto;}
+      pre{white-space: pre-wrap;}
     </style>
   </head>
   <body>
@@ -37,14 +37,8 @@
 const out = document.getElementById('out');
 const premiumLine = document.getElementById('premium-line');
 const unlockButton = document.getElementById('unlock');
-const userWallet = '0xE45278e0Db93649E57d43CfA38c147c282841d5c'; // 你的钱包地址，仅用于日志参考
-const log = (...args) => {
-  const lines = out.textContent.split('\n');
-  lines.push(args.join(' '));
-  if (lines.length > 50) lines.shift(); // 保留最后50行
-  out.textContent = lines.join('\n');
-  out.scrollTop = out.scrollHeight; // 自动滚动到底部
-};
+const userWallet = '0xE45278e0Db93649E57d43CfA38c147c282841d5c';
+const log = (...args) => { out.textContent += args.join(' ') + "\n"; };
 
 // 钱包错误处理辅助函数
 function handleWalletError(e, operation) {
@@ -106,37 +100,23 @@ async function walletRequestWithGracefulError(requestFn, operationType = '') {
   }
 }
 
-// 添加 fetch 超时处理
-async function fetchWithTimeout(url, options, timeout = 10000) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (e) {
-    clearTimeout(id);
-    log('❌ 请求超时或失败：', e.message || String(e));
-    throw e;
-  }
-}
-
 async function fetchPaymentRequirements() {
-  try {
-    const r = await fetchWithTimeout('/content', { method: 'GET' });
-    log('← /content 首次响应状态：', r.status);
-    if (r.status !== 402) {
-      return { response: r, requirements: null };
-    }
-    const body = await r.json();
-    if (!body.accepts || !Array.isArray(body.accepts) || body.accepts.length === 0) {
-      throw new Error('服务器未提供有效的支付要求');
-    }
-    return { response: r, requirements: body.accepts[0] };
-  } catch (e) {
-    log('❌ 获取支付要求失败：', e.message || String(e));
-    throw new Error('无法连接服务器或服务器响应无效');
+  const r = await fetch('/content', { method: 'GET' });
+  log('← /content 首次响应状态：', r.status);
+  if (r.status === 404) {
+    log('❌ 服务器返回404，/content端点不存在');
+    log('💡 请检查服务器是否正确配置/content路由，或尝试使用完整URL（如http://your-server.com/content）');
+    throw new Error('服务器未找到/content端点');
   }
+  if (r.status !== 402) {
+    const body = await r.text();
+    log('⚠️ 未返回 402，直接得到：', body.slice(0, 200));
+    return { response: r, requirements: null };
+  }
+  const body = await r.json();
+  const reqs = body.accepts?.[0];
+  if (!reqs) throw new Error('无有效的 payment requirements');
+  return { response: r, requirements: reqs };
 }
 
 function hex32Random() {
@@ -278,13 +258,7 @@ async function createPaymentHeader(reqs) {
       },
     };
 
-    let b64;
-    try {
-      b64 = btoa(JSON.stringify(paymentPayload));
-    } catch (e) {
-      log('❌ base64 编码失败：', e.message || String(e));
-      throw new Error('支付数据编码失败');
-    }
+    const b64 = btoa(JSON.stringify(paymentPayload));
     log('   X-PAYMENT (base64) 前 60 字符：', b64.slice(0, 60) + '…');
     return b64;
   } catch (e) {
@@ -325,12 +299,12 @@ async function unlock() {
     }
 
     log('→ 携带 X‑PAYMENT 重试…');
-    const paid = await fetchWithTimeout('/content', { headers: { 'X-PAYMENT': xPaymentB64 } });
+    const paid = await fetch('/content', { headers: { 'X-PAYMENT': xPaymentB64 } });
     log('← 支付后响应状态：', paid.status);
 
     if (paid.status !== 200) {
       const text = await paid.text();
-      log('❌ 支付后仍未成功：', paid.status, text);
+      log('❌ 支付后仍未成功：', paid.status, text.slice(0, 300));
       try {
         const parsed = JSON.parse(text);
         if (parsed.error) {
@@ -348,8 +322,8 @@ async function unlock() {
       const settlement = JSON.parse(atob(xpr));
       log('🧾 结算信息：\n' + JSON.stringify(settlement, null, 2));
       if (settlement.txHash) {
-        log('🔗 交易哈希：', settlement.txHash);
-        log(`🔗 查看交易：https://www.gatescan.org/gatelayer/tx/${settlement.txHash}`);
+        log('🔗 Tx: ' + settlement.txHash);
+        log('🔗 查看交易：https://www.gatescan.org/gatelayer/tx/' + settlement.txHash);
       }
     }
     const lines = text.split('\n');
@@ -368,10 +342,11 @@ async function unlock() {
     console.error(e);
     const errorMsg = e.message || String(e);
     log('❌ 出错：', errorMsg);
-    if (errorMsg.includes('取消') || errorMsg.includes('拒绝')) {
-      log('💡 操作已取消，您可以重新点击按钮重试');
-    } else {
+    const isUserCancellation = errorMsg.includes('取消') || errorMsg.includes('拒绝');
+    if (!isUserCancellation) {
       alert('出错：' + errorMsg);
+    } else {
+      log('💡 操作已取消，您可以重新点击按钮重试');
     }
   } finally {
     if (!isSuccess && unlockButton) {
